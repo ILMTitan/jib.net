@@ -21,7 +21,6 @@ import com.google.cloud.tools.jib.api.ImageReference;
 import com.google.cloud.tools.jib.api.InsecureRegistryException;
 import com.google.cloud.tools.jib.api.RegistryException;
 import com.google.cloud.tools.jib.api.RegistryUnauthorizedException;
-import com.google.cloud.tools.jib.async.AsyncStep;
 import com.google.cloud.tools.jib.async.NonBlockingSteps;
 import com.google.cloud.tools.jib.blob.Blobs;
 import com.google.cloud.tools.jib.builder.ProgressEventDispatcher;
@@ -50,7 +49,6 @@ import com.google.cloud.tools.jib.json.JsonTemplateMapper;
 import com.google.cloud.tools.jib.registry.RegistryAuthenticator;
 import com.google.cloud.tools.jib.registry.RegistryClient;
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.ListeningExecutorService;
 import com.google.common.util.concurrent.MoreExecutors;
 import java.io.IOException;
@@ -60,8 +58,7 @@ import java.util.concurrent.ExecutionException;
 import javax.annotation.Nullable;
 
 /** Pulls the base image manifest. */
-class PullBaseImageStep
-    implements AsyncStep<BaseImageWithAuthorization>, Callable<BaseImageWithAuthorization> {
+class PullBaseImageStep implements Callable<BaseImageWithAuthorization> {
 
   private static final String DESCRIPTION = "Pulling base image manifest";
 
@@ -90,21 +87,19 @@ class PullBaseImageStep
   private final BuildConfiguration buildConfiguration;
   private final ProgressEventDispatcher.Factory progressEventDispatcherFactory;
 
-  private final ListenableFuture<BaseImageWithAuthorization> listenableFuture;
-
   PullBaseImageStep(
       ListeningExecutorService listeningExecutorService,
       BuildConfiguration buildConfiguration,
       ProgressEventDispatcher.Factory progressEventDispatcherFactory) {
     this.buildConfiguration = buildConfiguration;
     this.progressEventDispatcherFactory = progressEventDispatcherFactory;
-
-    listenableFuture = listeningExecutorService.submit(this);
   }
 
-  @Override
-  public ListenableFuture<BaseImageWithAuthorization> getFuture() {
-    return listenableFuture;
+  PullBaseImageStep(
+      BuildConfiguration buildConfiguration,
+      ProgressEventDispatcher.Factory progressEventDispatcherFactory) {
+    this.buildConfiguration = buildConfiguration;
+    this.progressEventDispatcherFactory = progressEventDispatcherFactory;
   }
 
   @Override

@@ -19,16 +19,25 @@ package com.google.cloud.tools.jib.builder.steps;
 import com.google.cloud.tools.jib.async.AsyncStep;
 import com.google.cloud.tools.jib.async.AsyncSteps;
 import com.google.cloud.tools.jib.builder.ProgressEventDispatcher;
+import com.google.cloud.tools.jib.builder.steps.PullBaseImageStep.BaseImageWithAuthorization;
+import com.google.cloud.tools.jib.cache.CachedLayer;
 import com.google.cloud.tools.jib.configuration.BuildConfiguration;
 import com.google.cloud.tools.jib.docker.DockerClient;
 import com.google.cloud.tools.jib.global.JibSystemProperties;
+import com.google.cloud.tools.jib.image.Image;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
+import com.google.common.util.concurrent.Futures;
+import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.ListeningExecutorService;
 import com.google.common.util.concurrent.MoreExecutors;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
 import javax.annotation.Nullable;
 
 /**
@@ -88,13 +97,21 @@ public class StepsRunner {
   @Nullable private String rootProgressAllocationDescription;
   @Nullable private ProgressEventDispatcher rootProgressEventDispatcher;
 
+  private final MinimalSteps minimalSteps;
+
   private StepsRunner(
       ListeningExecutorService listeningExecutorService, BuildConfiguration buildConfiguration) {
     this.listeningExecutorService = listeningExecutorService;
     this.buildConfiguration = buildConfiguration;
+    minimalSteps = new MinimalSteps(buildConfiguration);
   }
 
   public StepsRunner retrieveTargetRegistryCredentials() {
+    ProgressEventDispatcher.Factory childProgressEventDispatcherFactory =
+        Preconditions.checkNotNull(rootProgressEventDispatcher).newChildProducer();
+    listeningExecutorService.submit(
+        () -> minimalSteps.retrieveTargetImageCredential(childProgressEventDispatcherFactory));
+
     return enqueueStep(
         () ->
             steps.retrieveTargetRegistryCredentialsStep =
@@ -102,6 +119,28 @@ public class StepsRunner {
                     listeningExecutorService,
                     buildConfiguration,
                     Preconditions.checkNotNull(rootProgressEventDispatcher).newChildProducer()));
+  }
+
+  public BuildResult buildToDocker(DockerClient dockerClient)
+      throws InterruptedException, ExecutionException {
+    Preconditions.checkNotNull(rootProgressEventDispatcher);
+
+    Future<BaseImageWithAuthorization> baseImageWithAuthorization = pullBaseImage();
+
+    ListenableFuture<ImmutableList<PullAndCacheBaseImageLayerStep>> baseImageLayerPullers =
+        createBaseImageLayerPullers(baseImageWithAuthorization);
+
+    Future<ImmutableList<CachedLayer>> cachedBaseImageLayers =
+        pullAndCacheBaseImageLayers(baseImageLayerPullers);
+
+    Future<List<CachedLayer>> cachedApplicationLayers = buildAndCacheApplicationLayers();
+
+    Future<Image> builtImage = buildImage(cachedBaseImageLayers, cachedApplicationLayers);
+
+    Future<BuildResult> buildResult =
+        submitTask(() -> minimalSteps.loadDocker(builtImage, dockerClient));
+
+    return buildResult.get();
   }
 
   public StepsRunner authenticatePush() {
@@ -115,25 +154,35 @@ public class StepsRunner {
                     Preconditions.checkNotNull(steps.retrieveTargetRegistryCredentialsStep)));
   }
 
-  public StepsRunner pullBaseImage() {
-    return enqueueStep(
-        () ->
-            steps.pullBaseImageStep =
-                new PullBaseImageStep(
-                    listeningExecutorService,
-                    buildConfiguration,
-                    Preconditions.checkNotNull(rootProgressEventDispatcher).newChildProducer()));
+  private Future<BaseImageWithAuthorization> pullBaseImage() {
+    return listeningExecutorService.submit(
+        new PullBaseImageStep(buildConfiguration, rootProgressEventDispatcher.newChildProducer()));
   }
 
-  public StepsRunner pullAndCacheBaseImageLayers() {
-    return enqueueStep(
-        () ->
-            steps.pullAndCacheBaseImageLayersStep =
-                new PullAndCacheBaseImageLayersStep(
-                    listeningExecutorService,
-                    buildConfiguration,
-                    Preconditions.checkNotNull(rootProgressEventDispatcher).newChildProducer(),
-                    Preconditions.checkNotNull(steps.pullBaseImageStep)));
+  private ListenableFuture<ImmutableList<PullAndCacheBaseImageLayerStep>>
+      createBaseImageLayerPullers(Future<BaseImageWithAuthorization> baseImageWithAuthorization) {
+    return listeningExecutorService.submit(
+        new PullAndCacheBaseImageLayersStep(
+            buildConfiguration,
+            rootProgressEventDispatcher.newChildProducer(),
+            baseImageWithAuthorization));
+  }
+
+  private <E> Future<List<E>> scheduleTasks(ImmutableList<? extends Callable<E>> tasks) {
+    List<ListenableFuture<E>> futures = new ArrayList<>();
+    for (Callable<E> task : tasks) {
+      futures.add(listeningExecutorService.submit(task));
+    }
+    return Futures.allAsList(futures);
+  }
+
+  private Future<ImmutableList<CachedLayer>> pullAndCacheBaseImageLayers(
+      Future<ImmutableList<PullAndCacheBaseImageLayerStep>> baseImageLayerPullers) {
+    return listeningExecutorService.submit(
+        () -> {
+          ImmutableList<PullAndCacheBaseImageLayerStep> pullers = baseImageLayerPullers.get();
+          return ImmutableList.copyOf(scheduleTasks(pullers).get());
+        });
   }
 
   public StepsRunner pushBaseImageLayers() {
@@ -148,27 +197,26 @@ public class StepsRunner {
                     Preconditions.checkNotNull(steps.pullAndCacheBaseImageLayersStep)));
   }
 
-  public StepsRunner buildAndCacheApplicationLayers() {
-    return enqueueStep(
-        () ->
-            steps.buildAndCacheApplicationLayerSteps =
-                BuildAndCacheApplicationLayerStep.makeList(
-                    listeningExecutorService,
-                    buildConfiguration,
-                    Preconditions.checkNotNull(rootProgressEventDispatcher).newChildProducer()));
+  public Future<List<CachedLayer>> buildAndCacheApplicationLayers() {
+    ImmutableList<BuildAndCacheApplicationLayerStep> applicationLayerBuilders =
+        BuildAndCacheApplicationLayerStep.makeList(
+            buildConfiguration, rootProgressEventDispatcher.newChildProducer());
+
+    return scheduleTasks(applicationLayerBuilders);
   }
 
-  public StepsRunner buildImage() {
-    return enqueueStep(
-        () ->
-            steps.buildImageStep =
-                new BuildImageStep(
-                    listeningExecutorService,
-                    buildConfiguration,
-                    Preconditions.checkNotNull(rootProgressEventDispatcher).newChildProducer(),
-                    Preconditions.checkNotNull(steps.pullBaseImageStep),
-                    Preconditions.checkNotNull(steps.pullAndCacheBaseImageLayersStep),
-                    Preconditions.checkNotNull(steps.buildAndCacheApplicationLayerSteps)));
+  public StepsRunner buildImage(
+      Future<BaseImageWithAuthorization> baseImageWithAuthorization,
+      Future<ImmutableList<CachedLayer>> cachedBaseImageLayers,
+      Future<List<CachedLayer>> cachedApplicationLayers) {
+
+    return listeningExecutorService.submit(
+        new BuildImageStep(
+            buildConfiguration,
+            rootProgressEventDispatcher.newChildProducer(),
+            baseImageWithAuthorization,
+            cachedBaseImageLayers,
+            cachedApplicationLayers));
   }
 
   public StepsRunner pushContainerConfiguration() {

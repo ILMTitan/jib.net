@@ -17,7 +17,6 @@
 package com.google.cloud.tools.jib.builder.steps;
 
 import com.google.cloud.tools.jib.api.DescriptorDigest;
-import com.google.cloud.tools.jib.async.AsyncStep;
 import com.google.cloud.tools.jib.builder.ProgressEventDispatcher;
 import com.google.cloud.tools.jib.builder.TimerEventDispatcher;
 import com.google.cloud.tools.jib.cache.Cache;
@@ -26,15 +25,13 @@ import com.google.cloud.tools.jib.cache.CachedLayer;
 import com.google.cloud.tools.jib.configuration.BuildConfiguration;
 import com.google.cloud.tools.jib.http.Authorization;
 import com.google.cloud.tools.jib.registry.RegistryClient;
-import com.google.common.util.concurrent.ListenableFuture;
-import com.google.common.util.concurrent.ListeningExecutorService;
 import java.io.IOException;
 import java.util.Optional;
 import java.util.concurrent.Callable;
 import javax.annotation.Nullable;
 
 /** Pulls and caches a single base image layer. */
-class PullAndCacheBaseImageLayerStep implements AsyncStep<CachedLayer>, Callable<CachedLayer> {
+class PullAndCacheBaseImageLayerStep implements Callable<CachedLayer> {
 
   private static final String DESCRIPTION = "Pulling base image layer %s";
 
@@ -44,10 +41,7 @@ class PullAndCacheBaseImageLayerStep implements AsyncStep<CachedLayer>, Callable
   private final DescriptorDigest layerDigest;
   private final @Nullable Authorization pullAuthorization;
 
-  private final ListenableFuture<CachedLayer> listenableFuture;
-
   PullAndCacheBaseImageLayerStep(
-      ListeningExecutorService listeningExecutorService,
       BuildConfiguration buildConfiguration,
       ProgressEventDispatcher.Factory progressEventDispatcherFactory,
       DescriptorDigest layerDigest,
@@ -56,13 +50,6 @@ class PullAndCacheBaseImageLayerStep implements AsyncStep<CachedLayer>, Callable
     this.progressEventDispatcherFactory = progressEventDispatcherFactory;
     this.layerDigest = layerDigest;
     this.pullAuthorization = pullAuthorization;
-
-    listenableFuture = listeningExecutorService.submit(this);
-  }
-
-  @Override
-  public ListenableFuture<CachedLayer> getFuture() {
-    return listenableFuture;
   }
 
   @Override

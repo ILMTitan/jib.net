@@ -16,7 +16,6 @@
 
 package com.google.cloud.tools.jib.builder.steps;
 
-import com.google.cloud.tools.jib.api.DescriptorDigest;
 import com.google.cloud.tools.jib.async.AsyncDependencies;
 import com.google.cloud.tools.jib.async.AsyncStep;
 import com.google.cloud.tools.jib.async.NonBlockingSteps;
@@ -25,7 +24,7 @@ import com.google.cloud.tools.jib.builder.ProgressEventDispatcher;
 import com.google.cloud.tools.jib.builder.TimerEventDispatcher;
 import com.google.cloud.tools.jib.configuration.BuildConfiguration;
 import com.google.cloud.tools.jib.event.events.LogEvent;
-import com.google.cloud.tools.jib.hash.Digests;
+import com.google.cloud.tools.jib.image.Image;
 import com.google.cloud.tools.jib.image.json.BuildableManifestTemplate;
 import com.google.cloud.tools.jib.image.json.ImageToJsonTranslator;
 import com.google.cloud.tools.jib.registry.RegistryClient;
@@ -131,8 +130,8 @@ class PushImageStep implements AsyncStep<BuildResult>, Callable<BuildResult> {
               .newRegistryClient();
 
       // Constructs the image.
-      ImageToJsonTranslator imageToJsonTranslator =
-          new ImageToJsonTranslator(NonBlockingSteps.get(NonBlockingSteps.get(buildImageStep)));
+      Image image = NonBlockingSteps.get(NonBlockingSteps.get(buildImageStep));
+      ImageToJsonTranslator imageToJsonTranslator = new ImageToJsonTranslator(image);
 
       // Gets the image manifest to push.
       BlobDescriptor containerConfigurationBlobDescriptor =
@@ -161,9 +160,7 @@ class PushImageStep implements AsyncStep<BuildResult>, Callable<BuildResult> {
                 }));
       }
 
-      DescriptorDigest imageDigest = Digests.computeJsonDigest(manifestTemplate);
-      DescriptorDigest imageId = containerConfigurationBlobDescriptor.getDigest();
-      BuildResult result = new BuildResult(imageDigest, imageId);
+      BuildResult result = BuildResult.fromImage(image, buildConfiguration.getTargetFormat());
 
       return Futures.whenAllSucceed(pushAllTagsFutures)
           .call(
